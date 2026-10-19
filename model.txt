@@ -1,0 +1,74 @@
+# STEP 1: Install required packages (if not already installed)
+!pip install scikit-learn joblib
+
+# STEP 2: Import necessary libraries
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, accuracy_score
+import joblib
+
+# STEP 3: Upload dataset
+from google.colab import files
+uploaded = files.upload()
+
+# STEP 4: Load and clean dataset
+df = pd.read_csv('Dataset.csv')
+df.dropna(inplace=True)
+
+# STEP 5: Define updated feature extractor and label logic
+def extract_features(window):
+    features = {}
+    gyro_energy = 0  # total gyro signal energy in window
+
+    for col in ['aX', 'aY', 'aZ', 'gX', 'gY', 'gZ']:
+        data = window[col].astype(float)
+        features[f'{col}_std'] = data.std()
+        features[f'{col}_zcr'] = ((data * data.shift(1)) < 0).sum()
+        features[f'{col}_ptp'] = data.max() - data.min()
+        features[f'{col}_rms'] = np.sqrt(np.mean(data**2))
+
+        if col.startswith('g'):
+            gyro_energy += np.mean(data**2)
+
+    # Label: sustained tremor = mostly 1s + strong gyro energy
+    features['label'] = 1 if (window['Result'].mean() > 0.8 and gyro_energy > 1e6) else 0
+    return features
+
+# STEP 6: Apply sliding window and extract features
+window_size = 50   # ~1 sec if sampling at 50 Hz
+step_size = 25     # 50% overlap
+
+windowed_data = []
+for start in range(0, len(df) - window_size + 1, step_size):
+    window = df.iloc[start:start + window_size]
+    feats = extract_features(window)
+    windowed_data.append(feats)
+
+window_df = pd.DataFrame(windowed_data)
+
+# STEP 7: Prepare data for training
+X = window_df.drop('label', axis=1)
+y = window_df['label']
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
+
+# STEP 8: Train the model
+model = RandomForestClassifier(
+    n_estimators=200,
+    class_weight='balanced',
+    random_state=42
+)
+model.fit(X_train, y_train)
+
+# STEP 9: Evaluate model
+y_pred = model.predict(X_test)
+print("Classification Report:\n", classification_report(y_test, y_pred))
+print(f"Accuracy: {accuracy_score(y_test, y_pred)*100:.2f}%")
+
+# STEP 10: Save the model
+joblib.dump(model, 'sustained_tremor_model.pkl')
+print("✅ Model saved as 'sustained_tremor_model.pkl'")
